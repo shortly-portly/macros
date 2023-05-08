@@ -1,0 +1,656 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# MetaProgramming in Elixir
+
+## Abstract Syntax Tree
+
+The Abstract Syntax Tree (AST) is the is the internal representation of Elixir code. To access the AST representation of an Elixir expression use the `quote` macro.
+
+```elixir
+quote do: 1 + 2
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:+, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]], [1, 2]}
+```
+
+```elixir
+quote do: div(10, 2)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:div, [context: Elixir, imports: [{2, Kernel}]], [10, 2]}
+```
+
+You can interact with the AST during **compilation**.
+
+<!-- livebook:{"break_markdown":true} -->
+
+The AST consists of a three element tupple.
+
+* first element is an atom (or another tuple),
+* the second element is a list of two-element tuples with metadata (such as line numbers) and
+* the third is a list of arguments.
+
+## Macros
+
+Macros are code that writes code. A macro can manipulate the AST using Elixir. A macro expects an AST as input and returns an AST as a return value.
+
+Macros are used throughout the Elixir language itself. Consider the following code:
+
+```elixir
+defmodule Notifier do
+  require Logger
+
+  def ping(pid) do
+    if Process.alive?(pid) do
+      Logger.debug("Sending Ping!")
+      send(pid, :ping)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Notifier, <<70, 79, 82, 49, 0, 0, 8, ...>>, {:ping, 1}}
+```
+
+The above code contains four macros; `defmodule`, `def`, `if`, `Logger.debug`.
+
+Looking up the documentation for a keyword will indicate if it is a macro.
+
+## Tying It All Together
+
+We can use the above to print the spoken form of an Elixir mathematical expression.
+
+First look at examples of of such expressions.
+
+```elixir
+quote do: 5 + 2
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:+, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]], [5, 2]}
+```
+
+```elixir
+quote do: 1 * 2 + 3
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:+, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]],
+ [{:*, [context: Elixir, imports: [{2, Kernel}]], [1, 2]}, 3]}
+```
+
+```elixir
+defmodule Math do
+  defmacro say({:+, _, [lhs, rhs]}) do
+    quote do
+      lhs = unquote(lhs)
+      rhs = unquote(rhs)
+      result = lhs + rhs
+      IO.puts("#{lhs} plus #{rhs} is #{result}")
+    end
+  end
+
+  defmacro say({:*, _, [lhs, rhs]}) do
+    quote do
+      lhs = unquote(lhs)
+      rhs = unquote(rhs)
+      result = lhs * rhs
+      IO.puts("#{lhs} times #{rhs} is #{result}")
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Math, <<70, 79, 82, 49, 0, 0, 8, ...>>, {:say, 1}}
+```
+
+```elixir
+require Math
+Math.say(5 + 2)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+5 plus 2 is 7
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+```elixir
+Math.say(6 * 2)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+6 times 2 is 12
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## The Structure of the AST
+
+```elixir
+quote do
+  defmodule MyModule do
+    def hello, do: "World!"
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:defmodule, [context: Elixir, imports: [{2, Kernel}]],
+ [
+   {:__aliases__, [alias: false], [:MyModule]},
+   [
+     do: {:def, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]],
+      [{:hello, [context: Elixir], Elixir}, [do: "World!"]]}
+   ]
+ ]}
+```
+
+```elixir
+quote do: 5 * 2 - 1 + 7
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:+, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]],
+ [
+   {:-, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]],
+    [{:*, [context: Elixir, imports: [{2, Kernel}]], [5, 2]}, 1]},
+   7
+ ]}
+```
+
+## AST Literals
+
+Several literals in Elixir have the same representation in the AST as they do in high level code.
+
+```elixir
+quote do: :atom
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:atom
+```
+
+```elixir
+quote do: 123
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+123
+```
+
+```elixir
+quote do: 1.34
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+1.34
+```
+
+```elixir
+quote do: [1, 2, 3]
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+[1, 2, 3]
+```
+
+```elixir
+quote do: "A String"
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+"A String"
+```
+
+```elixir
+quote do: {:ok, 1}
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, 1}
+```
+
+```elixir
+quote do: {:ok, [1, 2, 3]}
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:ok, [1, 2, 3]}
+```
+
+## Recreate unless
+
+```elixir
+defmodule ControlFlow do
+  defmacro unless(expression, do: block) do
+    # A macros purpose in life is to take in an AST representation and return an AST 
+    # representation.
+    quote do
+      if !unquote(expression), do: unquote(block)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, ControlFlow, <<70, 79, 82, 49, 0, 0, 6, ...>>, {:unless, 2}}
+```
+
+```elixir
+require ControlFlow
+ControlFlow.unless(2 == 5, do: "block entered")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+"block entered"
+```
+
+```elixir
+ControlFlow.unless(5 == 5, do: "block entered")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+nil
+```
+
+**Unquote**
+
+The `unquote` macro allows values to be injected into an AST. Think of `quote/unquote` as string interpolation for code.
+
+```elixir
+number = 5
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+5
+```
+
+```elixir
+ast =
+  quote do
+    number * 10
+  end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:*, [context: Elixir, imports: [{2, Kernel}]], [{:number, [], Elixir}, 10]}
+```
+
+```elixir
+Code.eval_quoted(ast)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+warning: variable "number" does not exist and is being expanded to "number()", please use parentheses to remove the ambiguity or change the variable name
+  nofile:1
+
+```
+
+Note how the value of `number` wasn't injected into the AST instead the AST for a local `number` reference was provided.
+
+```elixir
+ast =
+  quote do
+    unquote(number) * 10
+  end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:*, [context: Elixir, imports: [{2, Kernel}]], [5, 10]}
+```
+
+```elixir
+Code.eval_quoted(ast)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{50, []}
+```
+
+In the second example we correctly inject `number` into the AST and all is good with the world.
+
+## Macro Expansion
+
+<!-- Learn more at https://mermaid-js.github.io/mermaid -->
+
+```mermaid
+graph TD;
+  A[unless 2 ==5 ]-->B;
+  B[if !2 == 5]-->C;
+  C[case !2 == 5]
+```
+
+<!-- livebook:{"break_markdown":true} -->
+
+When the compiler encounters a macro, it recursively expands until the code no longer contains any macro calls.
+
+<!-- livebook:{"break_markdown":true} -->
+
+**Spedial Forms**
+
+The `case` macro is member of a small set of special macros, located in `Kernal.SpecialForms`.
+
+From the documentation:
+
+Special forms are the basic building blocks of Elixir, and therefore cannot be overridden by the developer.
+
+The Kernel.SpecialForms module consists solely of macros that can be invoked anywhere in Elixir code without the use of the Kernel.SpecialForms. prefix. This is possible because they all have been automatically imported, in the same fashion as the functions and macros from the Kernel module.
+
+These building blocks are defined in this module. Some of these special forms are lexical (such as alias/2 and case/2). The macros {}/1 and <<>>/1 are also special forms used to define tuple and binary data structures respectively.
+
+```elixir
+ast =
+  quote do
+    ControlFlow.unless(2 == 5, do: "block entered")
+  end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{{:., [], [{:__aliases__, [alias: false], [:ControlFlow]}, :unless]}, [],
+ [{:==, [context: Elixir, imports: [{2, Kernel}]], [2, 5]}, [do: "block entered"]]}
+```
+
+```elixir
+expanded_once = Macro.expand_once(ast, __ENV__)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:if, [context: ControlFlow, imports: [{2, Kernel}]],
+ [
+   {:!, [context: ControlFlow, imports: [{1, Kernel}]],
+    [{:==, [context: Elixir, imports: [{2, Kernel}]], [2, 5]}]},
+   [do: "block entered"]
+ ]}
+```
+
+```elixir
+expanded_fully = Macro.expand_once(expanded_once, __ENV__)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:case, [optimize_boolean: true],
+ [
+   {:!, [context: ControlFlow, imports: [{1, Kernel}]],
+    [{:==, [context: Elixir, imports: [{2, Kernel}]], [2, 5]}]},
+   [
+     do: [
+       {:->, [],
+        [
+          [
+            {:when, [],
+             [
+               {:x, [counter: -576460752303423260], Kernel},
+               {{:., [], [Kernel, :in]}, [],
+                [{:x, [counter: -576460752303423260], Kernel}, [false, nil]]}
+             ]}
+          ],
+          nil
+        ]},
+       {:->, [], [[{:_, [], Kernel}], "block entered"]}
+     ]
+   ]
+ ]}
+```
+
+## Code Injection and the Caller's Context
+
+```elixir
+defmodule Mod do
+  defmacro definfo do
+    IO.puts("In macro's context (#{__MODULE__}).")
+
+    quote do
+      IO.puts("In caller's context (#{__MODULE__}).")
+
+      def friendly_info do
+        IO.puts("""
+        My name is #{__MODULE__}
+        My functions are #{inspect(__MODULE__.__info__(:functions))}
+        """)
+      end
+    end
+  end
+end
+
+defmodule MyModule do
+  require Mod
+  Mod.definfo()
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+In macro's context (Elixir.Mod).
+In caller's context (Elixir.MyModule).
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MyModule, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:friendly_info, 0}}
+```
+
+```elixir
+MyModule.friendly_info()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+My name is Elixir.MyModule
+My functions are [friendly_info: 0]
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Hygiene Protects the Caller's Context
+
+Hygiene means that variables, imports and aliases that you define in a macro do not leak into the callers own definitions.
+
+```elixir
+ast =
+  quote do
+    if meaning_of_life == 42 do
+      "it's true"
+    else
+      "it remains to be seen"
+    end
+  end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:if, [context: Elixir, imports: [{2, Kernel}]],
+ [
+   {:==, [context: Elixir, imports: [{2, Kernel}]], [{:meaning_of_life, [], Elixir}, 42]},
+   [do: "it's true", else: "it remains to be seen"]
+ ]}
+```
+
+```elixir
+Code.eval_quoted(ast, meaning_of_life: 42)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+warning: variable "meaning_of_life" does not exist and is being expanded to "meaning_of_life()", please use parentheses to remove the ambiguity or change the variable name
+  nofile:1
+
+```
+
+We can use the `var!` macro to override hygiene within a quoted expression.
+
+```elixir
+ast =
+  quote do
+    if var!(meaning_of_life) == 42 do
+      "it's true"
+    else
+      "it remains to be seen"
+    end
+  end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:if, [context: Elixir, imports: [{2, Kernel}]],
+ [
+   {:==, [context: Elixir, imports: [{2, Kernel}]],
+    [
+      {:var!, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]],
+       [{:meaning_of_life, [], Elixir}]},
+      42
+    ]},
+   [do: "it's true", else: "it remains to be seen"]
+ ]}
+```
+
+```elixir
+Code.eval_quoted(ast, meaning_of_life: 42)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{"it's true", [meaning_of_life: 42]}
+```
+
+```elixir
+defmodule Setter do
+  defmacro bind_name(string) do
+    quote do
+      name = unquote(string)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Setter, <<70, 79, 82, 49, 0, 0, 6, ...>>, {:bind_name, 1}}
+```
+
+```elixir
+require Setter
+name = Chris
+Setter.bind_name("Max")
+name
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Chris
+```
+
+The `name` variable was not clobbered by the macro because hygiene protects the callers scope.
+
+```elixir
+defmodule Setter2 do
+  defmacro bind_name(string) do
+    quote do
+      var!(name) = unquote(string)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Setter2, <<70, 79, 82, 49, 0, 0, 6, ...>>, {:bind_name, 1}}
+```
+
+```elixir
+require Setter2
+name = Chris
+Setter2.bind_name("Max")
+name
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+"Max"
+```
+
+**Note**: Overriding hygiene should be avoided where possible as it can mask implementation details and add implicit behaviour that is unknown to the caller (though certain advanced cases require overriding hygiene)
