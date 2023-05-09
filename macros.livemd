@@ -448,9 +448,9 @@ expanded_fully = Macro.expand_once(expanded_once, __ENV__)
           [
             {:when, [],
              [
-               {:x, [counter: -576460752303423260], Kernel},
+               {:x, [counter: -576460752303422943], Kernel},
                {{:., [], [Kernel, :in]}, [],
-                [{:x, [counter: -576460752303423260], Kernel}, [false, nil]]}
+                [{:x, [counter: -576460752303422943], Kernel}, [false, nil]]}
              ]}
           ],
           nil
@@ -654,3 +654,890 @@ name
 ```
 
 **Note**: Overriding hygiene should be avoided where possible as it can mask implementation details and add implicit behaviour that is unknown to the caller (though certain advanced cases require overriding hygiene)
+
+## Recreating the If Macro
+
+```elixir
+defmodule ControlFlow2 do
+  defmacro my_if(expr, do: if_block) do
+    quote do
+      case unquote(expr) do
+        result when result in [false, nil] -> nil
+        _ -> unquote(if_block)
+      end
+    end
+  end
+
+  defmacro my_if(expr, do: if_block, else: else_block) do
+    quote do
+      case unquote(expr) do
+        result when result in [false, nil] -> unquote(else_block)
+        _ -> unquote(if_block)
+      end
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, ControlFlow2, <<70, 79, 82, 49, 0, 0, 8, ...>>, {:my_if, 2}}
+```
+
+```elixir
+import ControlFlow2
+
+my_if 1 == 1 do
+  "perfect"
+else
+  "incorrect"
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+"perfect"
+```
+
+## Adding a While Loop to Elixir
+
+```elixir
+defmodule Loop do
+  defmacro while(expression, do: block) do
+    quote do
+      try do
+        for _ <- Stream.cycle([:ok]) do
+          if unquote(expression) do
+            unquote(block)
+          else
+            throw(:break)
+          end
+        end
+      catch
+        :break -> :ok
+      end
+    end
+  end
+end
+```
+
+We use a `try/catch` block to enable us to `throw` an exception to break out of the loop.
+
+```elixir
+import Loop
+
+run_loop = fn ->
+  pid = spawn(fn -> :timer.sleep(4000) end)
+
+  while Process.alive?(pid) do
+    IO.puts("#{inspect(:erlang.time())} Stayin Alive!")
+    :timer.sleep(1000)
+  end
+end
+
+run_loop.()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{8, 31, 30} Stayin Alive!
+{8, 31, 31} Stayin Alive!
+{8, 31, 32} Stayin Alive!
+{8, 31, 33} Stayin Alive!
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Adding a Break Function
+
+```elixir
+defmodule Loop2 do
+  defmacro while2(expression, do: block) do
+    quote do
+      try do
+        for _ <- Stream.cycle([:ok]) do
+          if unquote(expression) do
+            unquote(block)
+          else
+            Loop.break()
+          end
+        end
+      catch
+        :break -> :ok
+      end
+    end
+  end
+
+  def break do
+    throw(:break)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Loop2, <<70, 79, 82, 49, 0, 0, 8, ...>>, {:break, 0}}
+```
+
+We define a `break` function for the caller that throws the `:break` value. The caller could throw the value, but providing a high-level break function abstracts the internal implementation and unifies the termination with the while macro.
+
+```elixir
+import Loop2
+
+pid =
+  spawn(fn ->
+    while2 true do
+      receive do
+        :stop ->
+          IO.puts("Stopping....")
+          break()
+
+        message ->
+          IO.puts("got #{inspect(message)}")
+      end
+    end
+  end)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#PID<0.268.0>
+```
+
+```elixir
+send(pid, :hello)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:hello
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+got :hello
+```
+
+```elixir
+send(pid, :stop)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:stop
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Stopping....
+```
+
+```elixir
+Process.alive?(pid)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+false
+```
+
+## Smarter Testing with Macros
+
+```elixir
+defmodule Assertion do
+  defmacro assert({operator, _, [lhs, rhs]}) do
+    quote bind_quoted: [operator: operator, lhs: lhs, rhs: rhs] do
+      Assertion.Test.assert(operator, lhs, rhs)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:assert, 1}}
+```
+
+**bind_quoted**
+
+The `quote` macro’s `bind_quoted` option passes a binding to the block, ensuring that the outside bound variables are unquoted only a single time. We could have written our quote block without bind_quoted, but it’s good practice to use it whenever possible to prevent accidental reevaluation of bindings.
+
+```elixir
+defmodule Debugger do
+  defmacro log(expression) do
+    if Application.get_env(:debugger, :log_level) == :debug do
+      quote do
+        IO.puts("====================")
+        IO.inspect(unquote(expression))
+        IO.puts("====================")
+        unquote(expression)
+      end
+    else
+      expression
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Debugger, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:log, 1}}
+```
+
+```elixir
+require Debugger
+
+Application.put_env(:debugger, :log_level, :debug)
+
+remote_api_call = fn -> IO.puts("calling remote api") end
+
+Debugger.log(remote_api_call.())
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+====================
+calling remote api
+:ok
+====================
+calling remote api
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+The `remote_api_call` was called twice!!
+
+Use `bind_quoted` to fix this.....
+
+```elixir
+defmodule Debugger2 do
+  defmacro log(expression) do
+    if Application.get_env(:debugger, :log_level) == :debug do
+      quote bind_quoted: [expression: expression] do
+        IO.puts("====================")
+        IO.inspect(expression)
+        IO.puts("====================")
+        expression
+      end
+    else
+      expression
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Debugger2, <<70, 79, 82, 49, 0, 0, 8, ...>>, {:log, 1}}
+```
+
+```elixir
+require Debugger2
+
+Application.put_env(:debugger, :log_level, :debug)
+
+remote_api_call = fn -> IO.puts("calling remote api") end
+
+Debugger2.log(remote_api_call.())
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+calling remote api
+====================
+:ok
+====================
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+`remote_api_call` is now only called once which is what we'd expect. Using `bind_quoted` keeps you safe from accidental reevaluations. It also cleans up the code as you don't need to sprinkle `unquote` everywhere.
+
+**Note**: when using `bind_quoted`, `unquote` is disabled. You'd need to explicilty pass `unquote: true` to the quote macro.
+
+```elixir
+defmodule BindQuoted do
+  defmacro withBinding(a, b) do
+    quote unquote: true, bind_quoted: [a: a] do
+      a + unquote(b)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, BindQuoted, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:withBinding, 2}}
+```
+
+```elixir
+require BindQuoted
+
+BindQuoted.withBinding(1, 2)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+3
+```
+
+## Back To Assertions
+
+```elixir
+defmodule Assertion.Test do
+  def assert(:==, lhs, rhs) when lhs == rhs do
+    IO.write(".")
+  end
+
+  def assert(:==, lhs, rhs) do
+    IO.puts("""
+    FAILURE:
+      Expected:       #{lhs}
+      to be equal to: #{rhs}
+    """)
+  end
+
+  def assert(:>, lhs, rhs) when lhs > rhs do
+    IO.write(".")
+  end
+
+  def assert(:>, lhs, rhs) do
+    IO.puts("""
+    FAILURE:
+      Expected:           #{lhs}
+      to be greater than: #{rhs}
+    """)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion.Test, <<70, 79, 82, 49, 0, 0, 9, ...>>, {:assert, 3}}
+```
+
+We placed the functions under a new Test module so our Assertion imports won’t leak into the caller’s module. We only want the caller to import the Assertion macros, so we delegate out to another module to avoid importing unnecessary functions.
+
+This also highlights an effective approach to macros, where the goal is to generate as little code as possible within the caller’s context. By proxying to an outside function, we keep the code generation as straightforward as possible. As you’ll see later, this approach is pivotal to writing maintainable macros.
+
+McCord, Chris. Metaprogramming Elixir: Write Less Code, Get More Done (and Have Fun!) . Pragmatic Bookshelf. Kindle Edition.
+
+```elixir
+import Assertion
+
+assert 1 > 2
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+FAILURE:
+  Expected:           1
+  to be greater than: 2
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+```elixir
+assert 5 == 5
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+.
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Math Test Module
+
+```elixir
+defmodule MathTest do
+  import Assertion
+
+  def run do
+    assert 5 == 5
+    assert 10 > 0
+    assert 1 > 2
+    assert 10 * 10 == 100
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MathTest, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:run, 0}}
+```
+
+```elixir
+MathTest.run()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+..FAILURE:
+  Expected:           1
+  to be greater than: 2
+
+.
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Module Extension
+
+The next example shows a how we can inject a function `run` into a different module
+
+```elixir
+defmodule Assertion2 do
+  defmacro extend(options \\ []) do
+    quote do
+      import unquote(__MODULE__)
+
+      def run do
+        IO.puts("Running the tests...")
+      end
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+warning: variable "options" is unused (if the variable is not meant to be used, prefix it with an underscore)
+  elixir/livebooks/macros.livemd#cell:fh2yh2gdbmujy24x4itsdyoiyc4woo7h:2: Assertion2.extend/1
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion2, <<70, 79, 82, 49, 0, 0, 8, ...>>, {:extend, 1}}
+```
+
+```elixir
+defmodule MathTest2 do
+  require Assertion2
+
+  Assertion2.extend()
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MathTest2, <<70, 79, 82, 49, 0, 0, 6, ...>>, {:run, 0}}
+```
+
+```elixir
+MathTest2.run()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Running the tests...
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## A Common API for Module Extension
+
+The above code works but Elixir already comes with a mechanism for code injection with the `use` macro.
+
+```elixir
+defmodule Assertion3 do
+  defmacro __using__(_options) do
+    quote do
+      import unquote(__MODULE__)
+
+      def run do
+        IO.puts("Running the tests...")
+      end
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion3, <<70, 79, 82, 49, 0, 0, 7, ...>>, {:__using__, 1}}
+```
+
+```elixir
+defmodule MathTest3 do
+  use Assertion3
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MathTest3, <<70, 79, 82, 49, 0, 0, 6, ...>>, {:run, 0}}
+```
+
+```elixir
+MathTest3.run()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Running the tests...
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Using Module Attributes for Code Generation
+
+```elixir
+defmodule Assertion4 do
+  defmacro __using__(_options) do
+    quote do
+      import unquote(__MODULE__)
+
+      Module.register_attribute(__MODULE__, :tests, accumulate: true)
+
+      def run do
+        IO.puts("Running the tests... (#{inspect(@tests)})")
+      end
+    end
+  end
+
+  defmacro test(description, do: test_block) do
+    test_func = String.to_atom(description)
+
+    quote do
+      @tests {unquote(test_func), unquote(description)}
+      def unquote(test_func)(), do: unquote(test_block)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion4, <<70, 79, 82, 49, 0, 0, 10, ...>>, {:test, 2}}
+```
+
+```elixir
+defmodule MathTest4 do
+  use Assertion4
+
+  test "integers can be added and subtracted" do
+    assert 1 + 1 == 2
+    assert 2 + 3 == 5
+    assert 5 - 5 == 10
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MathTest4, <<70, 79, 82, 49, 0, 0, 9, ...>>, {:"integers can be added and subtracted", 0}}
+```
+
+```elixir
+MathTest4.__info__(:functions)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+["integers can be added and subtracted": 0, run: 0]
+```
+
+```elixir
+MathTest4.run()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Running the tests... ([])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+This didn't work - `@tests` is empty when it should have contained one entry - "integers can be added and subtracted'
+
+<!-- livebook:{"break_markdown":true} -->
+
+**The Problem**
+
+`run/0` was defined just after we'd defined the `@tests` attribute. So when `run/0` was expanded `@tests` was empty. We don't actually start accumulating test information until after `run/0` had been fully expanded.
+
+**Before Compile to the Rescue**
+The code has been amended below to call `__before_compile__` just before `MathTest` is finished compiling. In this case what it means is that `run/0` is expanded **after** `test` has been expanded meaning that `@tests` contains the correct information.
+
+```elixir
+defmodule Assertion5 do
+  defmacro __using__(_options) do
+    quote do
+      import unquote(__MODULE__)
+
+      Module.register_attribute(__MODULE__, :tests, accumulate: true)
+      @before_compile unquote(__MODULE__)
+    end
+  end
+
+  defmacro __before_compile__(_env) do
+    quote do
+      def run do
+        IO.puts("Running the tests... (#{inspect(@tests)})")
+      end
+    end
+  end
+
+  defmacro test(description, do: test_block) do
+    test_func = String.to_atom(description)
+
+    quote do
+      @tests {unquote(test_func), unquote(description)}
+      def unquote(test_func)(), do: unquote(test_block)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion5, <<70, 79, 82, 49, 0, 0, 11, ...>>, {:test, 2}}
+```
+
+```elixir
+defmodule MathTest5 do
+  use Assertion5
+
+  test "integers can be added and subtracted" do
+    assert 1 + 1 == 2
+    assert 2 + 3 == 5
+    assert 5 - 5 == 10
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MathTest5, <<70, 79, 82, 49, 0, 0, 9, ...>>, {:"integers can be added and subtracted", 0}}
+```
+
+```elixir
+MathTest5.run()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Running the tests... (["integers can be added and subtracted": "integers can be added and subtracted"])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+The final code, with enumarating over all the tests is given below.
+
+```elixir
+defmodule Assertion6 do
+  defmacro __using__(_options) do
+    quote do
+      import unquote(__MODULE__)
+
+      Module.register_attribute(__MODULE__, :tests, accumulate: true)
+      @before_compile unquote(__MODULE__)
+    end
+  end
+
+  defmacro __before_compile__(_env) do
+    quote do
+      def run, do: Assertion6.Test.run(@tests, __MODULE__)
+    end
+  end
+
+  defmacro test(description, do: test_block) do
+    test_func = String.to_atom(description)
+
+    quote do
+      @tests {unquote(test_func), unquote(description)}
+      def unquote(test_func)(), do: unquote(test_block)
+    end
+  end
+
+  defmacro assert({operator, _, [lhs, rhs]}) do
+    quote bind_quoted: [operator: operator, lhs: lhs, rhs: rhs] do
+      Assertion6.Test.assert(operator, lhs, rhs)
+    end
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion6, <<70, 79, 82, 49, 0, 0, 12, ...>>, {:assert, 1}}
+```
+
+```elixir
+defmodule Assertion6.Test do
+  def run(tests, module) do
+    Enum.each(tests, fn {test_func, description} ->
+      case apply(module, test_func, []) do
+        :ok ->
+          IO.write(".")
+
+        {:fail, reason} ->
+          IO.puts("""
+          ==============================
+            FAILURE: #{description}
+          ==============================
+            #{reason}
+          """)
+      end
+    end)
+  end
+
+  def assert(:==, lhs, rhs) when lhs == rhs do
+    :ok
+  end
+
+  def assert(:==, lhs, rhs) do
+    {:fail,
+     """
+     Expected:       #{lhs}
+     to be equal to:  #{rhs}
+     """}
+  end
+
+  def assert(:>, lhs, rhs) when lhs > rhs do
+    :ok
+  end
+
+  def assert(:>, lhs, rhs) do
+    {:fail,
+     """
+     Expected:           #{lhs}
+     to be greater than: #{rhs}
+     """}
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Assertion6.Test, <<70, 79, 82, 49, 0, 0, 12, ...>>, {:assert, 3}}
+```
+
+```elixir
+defmodule MathTest6 do
+  use Assertion6
+
+  test "integers can be added and subtracted" do
+    Assertion6.assert(2 + 3 == 5)
+    Assertion6.assert(5 - 5 == 10)
+  end
+
+  test "integers can be multiplied and divided" do
+    Assertion6.assert(5 * 5 == 25)
+    Assertion6.assert(10 / 2 == 5)
+  end
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, MathTest6, <<70, 79, 82, 49, 0, 0, 10, ...>>,
+ {:"integers can be multiplied and divided", 0}}
+```
+
+```elixir
+MathTest6.run()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+.==============================
+  FAILURE: integers can be added and subtracted
+==============================
+  Expected:       0
+to be equal to:  10
+
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+**Remember**: Delegate to outside functionswhere possible.
